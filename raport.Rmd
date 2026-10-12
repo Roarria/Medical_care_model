@@ -1,0 +1,353 @@
+---
+title: "Model popytu na opiekę medyczną"
+subtitle: "Uogólnienia Regresji Poissona"
+author: "Aleksandra Kozłowska"
+date: "2026-05-12"
+output: 
+  pdf_document:
+    toc: false
+    toc_depth: 2
+    latex_engine: xelatex
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{caption}
+  - \captionsetup{justification=centering, singlelinecheck=false}
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  messages = FALSE,
+  include=FALSE,
+  fig.align = "center")
+  
+library(ggplot2)
+library(patchwork)
+library(knitr)
+library(kableExtra)
+library(MASS)
+library(lmtest)
+library(pscl)
+
+```
+
+# Wprowadzenie
+
+Pobrano plik z danymi "DebTrivedi". Dane (Deb i Trivedi, 1997) dotyczą $4406$ osób w wieku od $66$ lat, objętych programem ubezpieczenia Medicare. Celem jest zamodelowanie popytu na opiekę medyczną (liczba wizyt u lekarza) na podstawie dostępnych kowariantów. Zmienna zależna "ofp" dotyczy liczby wizyt w gabinecie lekarskim. Zbadano jej związek ze zmiennymi niezależnymi opisującymi pacjenta:
+
+- hosp – liczba pobytów w szpitalu,
+
+- health – zmienna opisująca subiektywne odczucie pacjenta o jego zdrowiu,
+
+- numchron – liczba przewlekłych stanów chorobowych,
+
+- gender – płeć,
+
+- school – liczba lat edukacji,
+
+- privins – indykator opisujący to, czy pacjent ma dodatkowe prywatne ubezpieczenie zdrowotne.
+
+\newpage
+
+# Wstępna analiza   
+
+Poniżej przedstawiono histogram zmiennej ofp.
+
+```{r histogram ofp, include=TRUE}
+dane <- read.csv("C:/Users/olako/OneDrive/Pulpit/ZML/lista 3/DebTrivedi.csv")
+
+ggplot(dane, aes(x = ofp)) +
+  geom_histogram(bins=40, fill = "steelblue", color = "white") +
+  theme_minimal() +
+  labs(
+    title = "Histogram zmiennej objaśnianej ofp",
+    x = "Liczba wizyt lekarskich (ofp)",
+    y = "Liczność") 
+
+# rozklad poissona - nadmierna dyspersja (?) - inflacja w zerze prosciej
+
+zm_pom_ofp <- log(dane$ofp + 0.5)
+#hist(zm_pom_ofp)
+dane$ofp_zm_pom <- zm_pom_ofp
+
+#head(dane[c(2,  7, 8, 9, 14, 16, 19)])  # zmienne ktore nas interesuja (regresory)
+#id_regres <- c(2,  7, 8, 9, 14, 16, 19)
+```
+
+Histogram zmiennej ofp wskazuje na obecność zjawiska inflacji w zerze, co widać po dominującym pierwszym słupku reprezentującym bardzo dużą liczbę obserwacji o wartości zero.
+
+Wprowadzono zmienną pomocniczą $f(\text{ofp}) = \log(\text{ofp} + 0.5)$, dzięki której łatwiej będzie zbadać wzajemne zależności pomiędzy "ofp" i regresorami - funkcja $f$ jest monotoniczna, dlatego zachowuje uporządkowanie pomiędzy punktami.
+Przed narysowaniem boxplotów dla $f(\text{ofp})$ względem każdego regresora, zastosowano podział części zmiennych na określone podgrupy.
+Zmienną hosp_group pogrupowano tak, aby wydzielić osoby z zerową, jedną lub dwiema wizytami w szpitalu, a pozostałe rzadsze przypadki (od $3$ do $10$) zebrać w jedną grupę „$3$ i więcej”. Podobnie postąpiono ze zmienną numchron_group, gdzie zachowano konkretne wartości od $0$ do $4$, natomiast wszystkie wyższe wyniki ($5$-$10$ schorzeń) połączono w jedną kategorię. W przypadku zmiennej school_group zastosowano podział na trzy etapy: do $8$ lat nauki, od $9$ do $12$ lat oraz powyżej $12$ lat. Przy tym podziale sugerowano się czasem trwania określonych etapów edukacji w USA: $1$-$8$ szkoła podstawowa, $9$-$12$ liceum i więcej lat - szkoła wyższa lub przypadki kończenia szkoły później niż zwykle.
+Pozostałe zmienne, takie jak płeć, posiadanie prywatnego ubezpieczenia czy subiektywna ocena zdrowia, pozostawiono w oryginalnych kategoriach, ponieważ ich liczebność była wystarczająca do analizy.
+
+\newpage
+
+Poniżej przedstawiono histogramy porównujące zmienne pogrupowane przed podziałem i po podziale.
+
+```{r pogrupowanie zmiennych, include=TRUE}
+# pogrupowanie zmiennych
+dane$hosp_group  <- 0*(dane$hosp==0) + 1*(dane$hosp==1) + 2*(dane$hosp==2) + 3*(dane$hosp %in% 3:10)
+dane$numchron_group  <- 0*(dane$numchron==0) + 1*(dane$numchron==1) + 2*(dane$numchron==2) + 
+  3*(dane$numchron==3) + 4*(dane$numchron==4) + 5*(dane$numchron %in% 5:10)
+dane$school_group <- 1*(dane$school %in% 0:8) + 2*(dane$school %in% 8:12) + 3*(dane$school %in% 13:20)
+
+# Wykresy dla zmiennej 'hosp':
+p1 <- ggplot(dane, aes(x = hosp)) + 
+  geom_bar(fill = "gray70") + labs(title = "Hosp (Oryginalne)", x = "Liczba pobytów w szpitalu") +
+  theme_minimal()
+p2 <- ggplot(dane, aes(x = hosp_group)) + 
+  geom_bar(fill = "steelblue") + labs(title = "Hosp (Pogrupowane)", x = "Grupy") +
+  theme_minimal()
+
+# Wykresy dla zmiennej 'numchron':
+p3 <- ggplot(dane, aes(x = numchron)) + 
+  geom_bar(fill = "gray70") + labs(title = "Numchron (Oryginalne)", x = "Liczba chorób przewlekłych") +
+  theme_minimal()
+p4 <- ggplot(dane, aes(x = numchron_group)) + 
+  geom_bar(fill = "forestgreen") + labs(title = "Numchron (Pogrupowane)", x = "Grupy") +
+  theme_minimal()
+
+# Wykresy dla zmiennej 'school':
+p5 <- ggplot(dane, aes(x = school)) + 
+  geom_bar(fill = "gray70") + labs(title = "School (Oryginalne)", x = "Lata nauki") +
+  theme_minimal()
+p6 <- ggplot(dane, aes(x = school_group)) + 
+  geom_bar(fill = "tomato") + labs(title = "School (Pogrupowane)", x = "Grupy") +
+  theme_minimal()
+
+
+(p1 + p2) / (p3 + p4) / (p5 + p6)
+```
+
+\newpage
+
+Poniżej przedstawiono boxploty dla $f(\text{ofp})$ względem każdego regresora.
+
+```{r boxploty, include=TRUE}
+b1 <- ggplot(dane, aes(x = factor(hosp_group, labels = c("0", "1", "2", "3+")), y = ofp_zm_pom)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7) +
+  labs(title = "Pobyty w szpitalu", x = "hosp_group", y = "f(ofp)") +
+  theme_minimal()
+
+b2 <- ggplot(dane, aes(x = factor(health, levels = c("poor", "average", "excellent")), y = ofp_zm_pom)) +
+  geom_boxplot(fill = "#fb8072", alpha = 0.7) +
+  labs(title = "Stan zdrowia", x = "health", y = "f(ofp)") +
+  theme_minimal()
+
+b3 <- ggplot(dane, aes(x = factor(numchron_group, labels = c("0", "1", "2", "3", "4", "5+")), y = ofp_zm_pom)) +
+  geom_boxplot(fill = "forestgreen", alpha = 0.7) +
+  labs(title = "Choroby przewlekłe", x = "numchron_group", y = "f(ofp)") +
+  theme_minimal()
+
+b4 <- ggplot(dane, aes(x = gender, y = ofp_zm_pom)) +
+  geom_boxplot(fill = "#fccde5", alpha = 0.7) +
+  labs(title = "Płeć", x = "gender", y = "f(ofp)") +
+  theme_minimal()
+
+b5 <- ggplot(dane, aes(x = factor(school_group, labels = c("1-8", "9-12", "13+")), y = ofp_zm_pom)) +
+  geom_boxplot(fill = "tomato", alpha = 0.7) +
+  labs(title = "Edukacja", x = "school_group", y = "f(ofp)") +
+  theme_minimal()
+
+b6 <- ggplot(dane, aes(x = privins, y = ofp_zm_pom)) +
+  geom_boxplot(fill = "#fdb462", alpha = 0.7) +
+  labs(title = "Ubezpieczenie", x = "privins", y = "f(ofp)") +
+  theme_minimal()
+
+
+(b1 + b2 + b3) / (b4 + b5 + b6)
+```
+
+Analiza porównawcza wykresów pudełkowych dla zmiennej pomocniczej $f(\text{ofp})$ pozwala przyjrzeć się temu, jak rozkład liczby wizyt zmienia się w zależności od poszczególnych kategorii regresorów. W przypadku zmiennych zdrowotnych, takich jak hospitalizacje (hosp_group) czy choroby przewlekłe (numchron_group), obserwujemy wyraźne przesunięcie całych pudełek w górę wraz ze wzrostem numeru grupy, co świadczy o zróżnicowaniu rozkładu zmiennej ofp w tych podgrupach. Szczególnie ciekawe jest porównanie subiektywnej oceny zdrowia (health) – tutaj pudełka dla grup „average” i „excellent” wykazują znacznie większy rozrzut i niższe położenie mediany w porównaniu do bardzo zwartej i wysoko położonej grupy „poor”. Subiektywne odczucie stanu zdrowia wydaje się również powiązane ze zmienną objaśnianą ofp - pacjenci, którzy lepiej oceniają swój stan zdrowia mają mniejszą medianę zmiennej pomocniczej $f(\text{ofp})$. 
+Wykresy w zależności od płci pokazują większy rozrzut wśród grupy mężczyzn. Pomimo podobnej wartości mediany pierwszy kwantyl dla mężczyzn jest położony znacznie niżej niż w przypadku kobiet. W podziale na grupy edukacyjne (school_group) występują bardzo zbliżone rozkłady dla dwóch pierwszych etapów nauki. Można zaobserwować jedynie zmniejszony rozrzut (mniejszą odległość między pierwszym kwantylem a medianą) w podgrupie osób z wykształceniem wyższym. 
+Jeśli chodzi o zmienną dotyczącą ubezpieczenia (privins) pudełko dla grupy osób z dodatkowym ubezpieczeniem zdrowotnym jest lekko przesunięte w górę i ma mniejszy rozrzut. Może to sugerować, że pacjenci ci są bardziej skłonni zgłosić się do lekarza.
+Co ciekawe, na większości wykresów dolne wąsy sięgają okolic zera, co może być odzwierciedleniem zjawiska inflacji w zerze zaobserwowanego wcześniej na histogramie.
+ 
+\newpage
+
+# Dobór modelu
+
+Do danych dopasowano $4$ modele: Poissona, ujemny dwumianowy, ZIPR oraz ZINBR.
+Każdy z modeli został przeanalizowany pod kątem istotności zmiennych, aby zredukować ich liczbę.
+W tym celu przeanalizowano wyniki z *summary()*.
+
+## Model Poissona
+
+```{r modele, include=TRUE}
+# Model Poissona
+model_pois_1 <- glm(ofp ~ as.factor(hosp_group) + health + as.factor(numchron_group) +
+                      gender + as.factor(school_group) + privins, 
+                    data = dane, family = poisson)
+
+# Model Ujemny Dwumianowy (NB)
+model_nb_1 <- glm.nb(ofp ~ as.factor(hosp_group) + health + as.factor(numchron_group) +
+                       gender + as.factor(school_group) + privins, 
+                     data = dane)
+
+# Model ZIPR (Zero-Inflated Poisson)
+model_zipr <- zeroinfl(ofp ~ as.factor(hosp_group) + health + as.factor(numchron_group) +
+                         gender + as.factor(school_group) + privins | 
+                         as.factor(hosp_group) + health + as.factor(numchron_group) +
+                         gender + as.factor(school_group) + privins, 
+                       data = dane, dist = "poisson")
+
+# Model ZINBR (Zero-Inflated Negative Binomial)
+model_zinbr <- zeroinfl(ofp ~ as.factor(hosp_group) + health + as.factor(numchron_group) +
+                          gender + as.factor(school_group) + privins | 
+                          as.factor(hosp_group) + health + as.factor(numchron_group) +
+                          gender + as.factor(school_group) + privins, 
+                        data = dane, dist = "negbin")
+
+summary(model_pois_1)
+```
+W modelu Poissona wszystkie uwzględnione zmienne objaśniające okazały się statystycznie istotne ($p$-value $< 0.05$). Każdy z wybranych regresorów wnosi istotną informację do modelu. 
+Warto jednak pamiętać, że w przypadku nadmiernej dyspersji model Poissona może zaniżać błędy standardowe i tym samym sztucznie zawyżać istotność zmiennych.
+
+Grupę referencyjną tego modelu, zawartą w wyrazie wolnym (Intercept), stanowią kobiety, które nie były hospitalizowane, nie cierpią na choroby przewlekłe, posiadają wykształcenie podstawowe, nie mają dodatkowego ubezpieczenia i oceniają swój stan zdrowia jako średni (average). 
+Współczynniki dla pozostałych kategorii interpretujemy jako różnicę względem tego bazowego profilu pacjenta. Przykładowo, ujemny parametr przy zmiennej gendermale wskazuje, że mężczyźni odbywają średnio mniej wizyt niż kobiety, natomiast dodatni współczynnik przy healthpoor potwierdza, że gorszy stan zdrowia wiąże się z częstszymi wizytami w gabinecie lekarskim w porównaniu do grupy o średnim samopoczuciu. Analogicznie, dobry stan zdrowia (healthexcellent) skutkuje obniżeniem przewidywanej liczby wizyt względem poziomu odniesienia.
+
+## Model ujemny dwumianowy
+
+```{r summary - nb, include=TRUE}
+summary(model_nb_1)
+```
+
+W modelu ujemnym dwumianowym, podobnie jak w modelu Poissona, wszystkie uwzględnione zmienne objaśniające okazały się statystycznie istotne na poziomie istotności $0.05$. Warto jednak zauważyć, że błędy standardowe estymatorów są tutaj wyraźnie wyższe niż w modelu Poissona (w szczególności przy zmiennych związanych z płcią i wykształceniem), co skutkuje niższymi wartościami statystyki $z$. Jest to efekt uwzględnienia parametru nadmiernej dyspersji ($\theta = 1.2249$), który pozwala na poprawne oszacowanie zmienności danych i uniknięcie sztucznego zawyżania istotności regresorów.
+
+Grupa referencyjna pozostaje bez zmian: stanowią ją kobiety o średnim stanie zdrowia, bez hospitalizacji i chorób przewlekłych, z podstawowym wykształceniem i brakiem prywatnego ubezpieczenia. Kierunki zależności dla regresorów są spójne z poprzednim modelem: hospitalizacje, choroby przewlekłe, złe samopoczucie (healthpoor), posiadanie prywatnego ubezpieczenia oraz wyższe wykształcenie wiążą się ze wzrostem oczekiwanej liczby wizyt. Bycie mężczyzną oraz znakomity stan zdrowia (healthexcellent) korelują natomiast z rzadszym korzystaniem z porad lekarskich. Najbardziej zauważalną różnicą jest zmiana w poziomie istotności zmiennej dotyczącej wykształcenia średniego (school_group 2) – w modelu ujemnym dwumianowym jej wpływ jest znacznie słabszy niż wcześniej ($p$-value $\approx 0.04$), co sugeruje, że model ten lepiej oddaje rzeczywistą niepewność szacunków. Obniżona wartość wskaźnika AIC ($24329$ w porównaniu do $35513$ w modelu Poissona) wskazuje na zdecydowanie lepsze dopasowanie modelu ujemnego dwumianowego do analizowanego zbioru danych.
+
+## Model ZIPR (Zero-Inflated Poisson)
+
+```{r summary - zipr, include=TRUE}
+summary(model_zipr)
+```
+
+Model ZIPR opiera się na założeniu, że analizowana populacja seniorów składa się z dwóch odrębnych grup. Pierwsza część modelu, oparta na regresji logistycznej (komponent inflacyjny), 
+odpowiada za zidentyfikowanie podpopulacji osób niechodzących do lekarza, które systemowo generują zera (tzw. zera strukturalne). 
+Druga część (komponent zliczający) przewiduje liczbę wizyt w grupie osób korzystających z usług medycznych.
+Ich zapotrzebowanie na opiekę opisuje rozkład Poissona. W części odpowiedzialnej za rozpoznanie podpopulacji niekorzystającej z lekarza, istotny wpływ na "wyjście" z tej grupy mają choroby przewlekłe oraz posiadanie prywatnego ubezpieczenia. Ujemne współczynniki przy tych zmiennych oznaczają, że pacjenci ubezpieczeni i obciążeni chorobami mają drastycznie mniejszą szansę na bycie „zerami strukturalnymi”. Co ciekawe, płeć męska (gendermale) charakteryzuje się dodatnim współczynnikiem, co sugeruje, że mężczyźni są bardziej narażeni na przynależność do podpopulacji, która w ogóle nie pojawia się w gabinetach lekarskich. Z kolei subiektywna ocena zdrowia oraz wyższe poziomy hospitalizacji nie okazały się tutaj statystycznie istotne, co może oznaczać, że te czynniki nie determinują samego faktu bycia pacjentem z pierwszej podpopulacji. 
+Zupełnie inaczej sytuacja wygląda w części przewidującej liczbę wizyt w drugiej grupie (osób potencjalnie korzystających z opieki). Tutaj wszystkie zmienne są silnie istotne statystycznie ($p$-value $< 0.05$). W tej podpopulacji mechanizm jest dosyć przejrzysty: czynniki zdrowotne, takie jak hospitalizacje czy choroby przewlekłe, działają stymulująco na intensywność wizyt. Z kolei znakomita samoocena zdrowia oraz bycie mężczyzną wiążą się ze zmniejszeniem przewidywanej liczby porad lekarskich.
+
+Można zatem stworzyć model zredukowany poprzez usunięcie zmiennych health oraz school_group
+z komponentu inflacyjnego. Poniżej przedstawiono porównanie obu modeli. Przeprowadzono test ilorazu wiarygodności służący do porównania dopasowania modelu ZIPR w wersji pełnej oraz zredukowanej.
+
+```{r model zipr zredukowany, include=TRUE}
+model_zipr_red <- zeroinfl(ofp ~ as.factor(hosp_group) + health + as.factor(numchron_group) + 
+                             gender + as.factor(school_group) + privins | 
+                             as.factor(hosp_group) + as.factor(numchron_group) + 
+                             gender + privins, 
+                           data = dane, dist = "poisson")
+
+summary(model_zipr_red)
+
+# porownanie modeli
+lrtest(model_zipr, model_zipr_red)
+```
+
+Statystyka testowa opiera się na różnicy logarytmów funkcji wiarygodności obu modeli. Uzyskany wynik $p$-value na poziomie $0.1047$ (powyżej progu $0.05$) wskazuje na brak podstaw do odrzucenia hipotezy zerowej. Oznacza to, że usunięcie informacji o subiektywnym stanie zdrowia oraz poziomie wykształcenia z części odpowiedzialnej za rozpoznawanie podpopulacji niekorzystającej z lekarza nie pogorszyło jakości modelu w sposób istotny statystycznie. Próba dodatkowego zredukowania komponentu inflacyjnego o zmienną hosp_group zakończyła się istotną utratą dokładności dopasowania, dlatego ostatecznie przyjęto model zredukowany o zdrowie i wykształcenie jako optymalny.
+
+\newpage
+
+## Model ZINBR (Zero-Inflated Negative Binomial)
+
+```{r summary - zinbr, include=TRUE}
+summary(model_zinbr)
+```
+
+Model ZINBR jest najbardziej zaawansowany z rozważanych modeli, ponieważ jednocześnie odpowiada na problem nadmiaru zer (poprzez komponent inflacyjny) oraz na problem nadmiernej dyspersję (poprzez rozkład ujemny dwumianowy w części zliczającej). W komponencie zliczającym, który przewiduje intensywność wizyt u osób aktywnych medycznie, większość zmiennych zachowuje swoją istotność, jednak błędy standardowe są znacznie wyższe niż w modelu ZIPR. Jest to naturalny efekt uwzględnienia dodatkowej wariancji danych ($\theta = 1.5271$). Interesujący jest fakt, że średni poziom wykształcenia (school_group 2) przestał być istotnym predyktorem liczby wizyt ($p$-value $\approx 0.10$), co sugeruje, że w modelu uwzględniającym szeroki rozrzut danych różnica między wykształceniem podstawowym a średnim nie jest statystycznie znacząca. Również zmienna gendermale straciła na istotności w komponencie zliczającym.
+
+Zaproponowano model zredukowany o zmienną gender z części zliczającej oraz health i school_group z części inflacyjnej. Model w ten sposób zredukowany porównano z modelem pełnym poniżej.
+
+```{r model zinbr zredukowany, include=TRUE}
+model_zinbr_red <- zeroinfl(ofp ~ as.factor(hosp_group) + health + as.factor(numchron_group) +
+                          as.factor(school_group) + privins | 
+                          as.factor(hosp_group) + as.factor(numchron_group) +
+                          gender + privins, 
+                        data = dane, dist = "negbin")
+
+summary(model_zinbr_red)
+
+# porownanie modeli
+lrtest(model_zinbr, model_zinbr_red)
+```
+
+Wynik testu ilorazu wiarygodności ($p = 0.08258$) jest powyżej progu $0.05$, co oznacza, że usunięcie zmiennych gender z części zliczającej oraz health i school_group z części inflacyjnej nie pogorszyło modelu w sposób istotny. Zatem brak podstaw do odrzucenia hipotezy zerowej o istotnej różnicy między modelami. Ze względu na wyższe $p$-wartości dla regresorów powiązanych ze zmienną hosp_group próbowano dodatkowo zredukować o nią komponent inflacyjny modelu, jednak $p$-wartość testu ilorazu wiarogodności spadła znacząco poniżej poziomu istotności $\alpha=0.05$. Zatem przyjęto ten model zredukowany za optymalny.
+
+
+## Porównanie modeli
+
+W celu dokonania wyboru najlepszego modelu przygotowano tabele porównawczą zawierające wartości uzyskanych estymatorów (parametrów modelów), liczbę parametrów modelu, logarytm funkcji wiarogodności, AIC, BIC oraz oczekiwaną liczbę zer generowanych przez model.
+
+\newpage
+
+```{r tabela porownawcza - long, include=TRUE}
+modele <- list(Poisson = model_pois_1, NegBin = model_nb_1, 
+               ZIPR = model_zipr_red, ZINBR = model_zinbr_red)
+
+
+df_stats <- sapply(modele, function(m) {
+  c(
+    Parametry = if(inherits(m, "zeroinfl")) {
+      length(coef(m)) + (if(m$dist == "negbin") 1 else 0)
+      } else {
+        length(coef(m)) + (if(inherits(m, "negbin") || !is.null(m$theta)) 1 else 0)
+        },
+    LogLik = as.numeric(logLik(m)),
+    AIC = AIC(m),
+    BIC = BIC(m),
+    Zera_Oczekiwane = if(inherits(m, "zeroinfl")) sum(predict(m, type="prob")[,1]) 
+                      else if(inherits(m, "negbin")) sum(dnbinom(0, mu=fitted(m), size=m$theta))
+                      else sum(dpois(0, fitted(m)))
+  )
+})
+
+rownames(df_stats) <- c("Liczba parametrów", "Log-Likelihood", "AIC", "BIC", "Oczekiwana liczba zer")
+
+
+# komponent zliczajacy:
+all_vars <- unique(unlist(lapply(modele, function(m) names(coef(m, model="count")))))
+
+df_final <- as.data.frame(sapply(modele, function(m) {
+  cf <- coef(m, model="count")
+  round(cf[all_vars], 2) # zaokraglenie
+}))
+rownames(df_final) <- paste(all_vars, "")
+
+
+# komponent inflacji:
+zero_vars <- unique(unlist(lapply(modele, function(m) if(inherits(m, "zeroinfl")) names(coef(m, model="zero")))))
+
+df_zero <- as.data.frame(sapply(modele, function(m) {
+  if(inherits(m, "zeroinfl")) round(coef(m, model="zero")[zero_vars], 2) else rep(NA, length(zero_vars))
+}))
+rownames(df_zero) <- paste(zero_vars)
+
+
+# parametr theta (dyspersji):
+df_theta <- data.frame(
+  Poisson = "",
+  NegBin = round(model_nb_1$theta,2),
+  ZIPR = "",
+  ZINBR = round(model_zinbr_red$theta,2)
+)
+rownames(df_theta) <- "Theta/Dispersion"
+
+
+tabela_final <- rbind(df_final, df_theta, df_zero, round(df_stats, 2))
+tabela_final[is.na(tabela_final)] <- ""
+
+kable(tabela_final, format = "latex", booktabs = TRUE, 
+      caption = "Zestawienie estymatorów i statystyk dopasowania") %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down")) %>%
+  pack_rows("Komponent zliczający", 1, length(all_vars)+1) %>%
+  pack_rows("Komponent inflacji", length(all_vars) + 2, length(all_vars) + length(zero_vars)) %>%
+  pack_rows("Statystyki dopasowania", nrow(tabela_final) - 4, nrow(tabela_final))
+
+```
+
+Zestawienie wyników w tabeli pozwala ocenić jakość dopasowania rozważanych modeli. Model Poissona okazuje się najmniej precyzyjny, co potwierdzają najwyższe wartości kryteriów AIC oraz BIC. Jego główną słabością jest niezdolność do poprawnego oszacowania liczby zer w danych – model ten przewiduje jedynie ok. $62$ obserwacji zerowych, podczas gdy w rzeczywistości jest ich $683$. Wprowadzenie parametru dyspersji w modelu ujemnym dwumianowym oraz modelu ZINBR okazuje się najistotniejszym czynnikiem wpływającym na poprawę jakości dopasowania modelu. Wartości kryteriów AIC i BIC dla modelu ZIPR są znacznie wyższe niż w modelu ujemnym dwumianowym oraz modelu ZINBR. Pod tym względem modelowi ZIPR bliżej jest do modelu Poissona. 
+Model ZINBR uzyskał najniższe wartości kryteriów informacyjnych (AIC: $24216$, BIC: $24382$). Jest on zatem najlepszym z rozważanych modeli.
+
